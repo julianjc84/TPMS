@@ -1,71 +1,187 @@
-# TPMS External Tire Pressure Monitoring System 433 MHz (CC1101) / Bluetooth BLE (ESP32)
+# BLE TPMS - Bluetooth Tire Pressure Monitoring System
 
-Two pressure sensors (direct external tpms) have been investigated. One model transmits via 433 MHz, the other via Bluetooth BLE.
+Interactive desktop tool to monitor external TPMS sensors via Bluetooth Low Energy.
 
-## 433 MHz
-Model https://aliexpress.com/item/1005004439177734.html
+## Features
 
-Signals are received with rtl_sdr and SDR dongle as protocol 201 "tpms_truck":
-https://github.com/merbanan/rtl_433/blob/master/src/devices/tpms_truck.c
+- **Interactive UI** - Menu-driven interface for discovering and monitoring sensors
+- **Auto-Detection** - Automatically identifies TPMS sensors from all nearby BLE devices
+- **Multi-Sensor** - Track 4+ sensors simultaneously with friendly names
+- **Modular Decoders** - Plugin system supports different TPMS sensor types
+- **Dual Units** - Pressure displayed in both BAR and PSI
+- **HEX Packet View** - Raw BLE packet data for debugging
+- **Color-Coded Display** - Status indicators at a glance
+- **Saved Configuration** - Remembers your sensors between sessions
+- **CSV Logging** - Optional data logging to file
 
-Previous work has been anticipated:
+## Supported Sensors
 
-https://www.youtube.com/watch?app=desktop&v=stQPjNI7_DA
+| Decoder | Sensor Type | Data Length | Identification |
+|---------|------------|-------------|----------------|
+| BR-7byte | Generic "BR" sensors | 7 bytes | Name "BR", UUID 0x27a5 |
+| SYTPMS-6byte | SYTPMS sensors | 6 bytes | Name contains "TPMS" |
+| Generic | Unknown sensors | 4+ bytes | Fallback with heuristics |
 
-https://www.hackster.io/jsmsolns/arduino-tpms-tyre-pressure-display-b6e544
+**Tested with:** https://aliexpress.com/item/1005004504977890.html
 
-Goal was to receive data with ESP8266 and CC1101 and based on RadioLib:
+New sensor types can be added via the modular decoder system. See [DECODER_GUIDE.md](DECODER_GUIDE.md).
 
-https://jgromes.github.io/RadioLib/
+## Quick Start
 
-Bitrate of 19200 baud and sync word 0x001a have shown to work fine. Sensors could NOT be activated with trigger tool OEC-T5 EL-50448. Once pressurized they transmit when pressure changes and about once an hour with constant non-zero pressure. Rotation of a bicycle wheel could not trigger transmission.
+```bash
+# One-time setup (creates virtual environment, installs dependencies)
+./setup.sh
 
-With RadioLib godmode has been enabled in order to address CC1101 registers directly, since the library does not allow for sync byte = 0x00.
+# Run the monitor
+./run.sh
+```
 
-Protocol is described in detail in tpms_truck.c (see above). Example payload is: xxxxxxxx0030f3127e (ID xxxxxxxx, wheel 0, 243 kPa, 18°C).
+## Usage
 
-## Bluetooth BLE
-Model https://aliexpress.com/item/1005004504977890.html
+### Main Menu
 
-Signals are received with SYTPMS app.
+```
+BLE TPMS Monitor - Interactive
+================================
 
-Previous work has been anticipated:
+Current Configuration:
+  Front Left         (AC:15:85:C3:A2:01)
+  Front Right        (AC:15:85:C3:A2:02)
 
-https://www.instructables.com/BLE-Direct-Tire-Pressure-Monitoring-System-TPMS-Di/
+Options:
+  1 - Discover and select sensors
+  2 - Start monitoring
+  3 - Remove a sensor
+  4 - Clear all sensors
+  5 - List available decoders
+  q - Quit
+```
 
-https://github.com/ra6070/BLE-TPMS
+### Workflow
 
-https://forum.arduino.cc/t/arduino-ble-tpms-capteur-pression-pneus/592030/60
+1. **Discover** - Scan for nearby BLE devices (option 1)
+2. **Select** - Choose which sensors to monitor, give them names
+3. **Monitor** - Start live monitoring (option 2)
 
-https://raspberrypi.stackexchange.com/questions/76959/how-to-decode-tpms-sensor-data-through-rpi3-bluetooth
+### Device Discovery
 
-With BLE scanner name "BR", service "0x27a5" (pressure psi) and manufacturer data have been received as advertising data. The 7 byte manufacturer data seem to contain sensor readings with format SSBBTTPPPPCCCC:
+```
+#    MAC Address          Name       RSSI   Decoder          TPMS?
+---------------------------------------------------------------------------
+1    AC:15:85:C3:A2:01   BR         -45    BR-7byte         BR Sensor
+2    AC:15:85:C3:A2:02   BR         -48    BR-7byte         BR Sensor
+3    AA:BB:CC:DD:EE:FF   Unknown    -72    Unknown
+```
 
-|field|content|
-|---:|-------|
-|SS|status|
-|BB|battery 1/10 V|
-|TT|temperature degC|
-|PPPP|(absolute) pressure 1/10 psi|
-|CCCC|checksum|
+Select sensors by number, or press `a` to auto-select all detected TPMS devices.
 
-Status byte SS: ARSB2H1y
+### Live Monitoring
 
-|bit|content|
-|--:|-------|
-|A|alarm zero pressure|
-|R|rotating|
-|S|standing still for about 15min|
-|B|begin rotating|
-|2|decreasing pressure below 20.7 psi|
-|H|rising pressure|
-|1|decreasing pressure above 20.7 psi|
-|y|unknown|
+```
+Sensor          Decoder      Pressure                Temp    Battery   Status     HEX Packet        Age
+---------------------------------------------------------------------------------------------------------
+Front Left      BR-7byte     2.15 bar (31.2 psi)     22C     2.9V      ROTAT      281d160105a376    5s ago
+Front Right     BR-7byte     2.10 bar (30.5 psi)     23C     3.0V      STILL      291e170106b487    3s ago
+```
 
-Once pressurized they transmit when pressure changes and any couple of minutes. Rotation of a bicycle wheel corresponding to about 4 to 8 km/h speed triggered more frequent transmissions.
+Press `Ctrl+C` to stop monitoring and return to menu.
 
-BLE Advertising Data Payload: Short UUID (16 bit) "0x27a5" (byte 0 to 3, length 3, type 0x03), short name "BR" (byte 4 to 7, length 3, type 0x08), and manufacturer data including checksum (byte 8 to 16, length 8, type 0xff) as shown above. Example payload is: 0303a527 03084252 08ff281d130105a376 (2.9 V, 19°C, 11.6 psi, 3 AD structures: see Assigned Numbers Document https://www.bluetooth.com/specifications/assigned-numbers/)
+## Requirements
 
-Sensor data could be received with ESP32 and BLE library.
+- Python 3.7+
+- Bluetooth adapter
+- Linux, macOS, or Windows
 
-Two versions to receive BLE data with python are submitted: one based on bluepy library, one based on bleak library. (I need to receive sensor data with my PinePhone, where both examples work.) Issues are: With the bleak example sometimes multiple (including old) data are received. Drawback of bluepy example is that it needs sudo to run. (See https://pypi.org/project/bluepy/ and https://pypi.org/project/bleak/ for details.)
+Dependencies are installed automatically by `setup.sh`:
+- `bleak` - Cross-platform BLE library (no sudo required)
+- `colorama` - Colored terminal output
+
+## Project Structure
+
+```
+TPMS/
+├── tpms-interactive.py    # Main application
+├── sensor_decoders.py     # Modular decoder library
+├── setup.sh               # One-time setup (venv + dependencies)
+├── run.sh                 # Launch the app
+├── activate.sh            # Quick venv activation helper
+├── requirements.txt       # Python dependencies
+├── README.md              # This file
+├── PROTOCOL.md            # BLE TPMS protocol documentation
+├── DECODER_GUIDE.md       # Guide for adding new sensor types
+└── deprecated/            # Old implementations (reference only)
+```
+
+## Adding New Sensor Types
+
+The modular decoder system makes it easy to support new TPMS sensors:
+
+1. Create a decoder class in `sensor_decoders.py`
+2. Implement `can_decode()` to identify your sensor
+3. Implement `decode()` to parse the data
+4. Register it in the factory
+
+See [DECODER_GUIDE.md](DECODER_GUIDE.md) for a complete guide with examples and reverse-engineering tips.
+
+## Data Format
+
+**Output fields:**
+- **Sensor** - Friendly name (configured during discovery)
+- **Decoder** - Which decoder parsed the data
+- **Pressure** - Relative pressure in BAR and PSI
+- **Temp** - Temperature in Celsius
+- **Battery** - Voltage (V)
+- **Status** - Sensor status flags
+- **HEX Packet** - Raw manufacturer data
+
+**Status Flags:**
+
+| Flag | Meaning |
+|------|---------|
+| ALARM | Zero pressure alarm |
+| ROTAT | Wheel rotating (>4 km/h) |
+| STILL | Standing still for ~15 minutes |
+| BGROT | Begin rotating (transition) |
+| DECR2 | Pressure decreasing below 20.7 psi |
+| RISIN | Pressure rising |
+| DECR1 | Pressure decreasing above 20.7 psi |
+| LBATT | Low battery warning |
+
+See [PROTOCOL.md](PROTOCOL.md) for full protocol details.
+
+## Sensor Behavior
+
+- **Pressure change:** Immediate transmission
+- **Stationary:** Transmits every 2-5 minutes
+- **Rotating:** More frequent (~10-30 seconds) above 4 km/h
+- **Activation:** Pressurize above 10 psi (0.7 bar)
+- **Battery:** CR1632, ~1-2 year lifespan, LBATT flag below ~2.5V
+
+## Troubleshooting
+
+### No sensors detected
+- Verify Bluetooth is enabled
+- Ensure sensors are pressurized (>10 psi)
+- Try spinning the wheel to trigger transmission
+- Use a BLE scanner app (e.g., nRF Connect) to verify sensor MAC addresses
+- Move closer to sensors (<5m)
+
+### Invalid checksums
+- Move closer to sensors
+- Reduce Bluetooth congestion
+- Checksum algorithm may need refinement for your sensor model
+
+### Setup issues
+- If `pip install` fails with "externally-managed-environment", use `./setup.sh` (uses venv)
+- If `python3-venv` is missing: `sudo apt install python3-venv`
+
+## References
+
+- https://www.instructables.com/BLE-Direct-Tire-Pressure-Monitoring-System-TPMS-Di/
+- https://github.com/ra6070/BLE-TPMS
+- https://forum.arduino.cc/t/arduino-ble-tpms-capteur-pression-pneus/592030/60
+- Bluetooth Assigned Numbers: https://www.bluetooth.com/specifications/assigned-numbers/
+
+## License
+
+This project is provided as-is for educational and personal use.
