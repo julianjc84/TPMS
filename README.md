@@ -16,13 +16,14 @@ Interactive desktop tool to monitor external TPMS sensors via Bluetooth Low Ener
 
 ## Supported Sensors
 
-| Decoder | Sensor Type | Data Length | Identification |
-|---------|------------|-------------|----------------|
-| BR-7byte | Generic "BR" sensors | 7 bytes | Name "BR", UUID 0x27a5 |
-| SYTPMS-6byte | SYTPMS sensors | 6 bytes | Name contains "TPMS" |
-| Generic | Unknown sensors | 4+ bytes | Fallback with heuristics |
+| Decoder | Sensor Type | Data Size | Identification | Status |
+|---------|------------|-----------|----------------|--------|
+| **TPMS3-16byte** | Generic BLE TPMS (ZEEPIN/TP630) | 16 bytes | Name `TPMS{N}_*`, CID 0x0100 | **Tested** |
+| BR-7byte | Generic "BR" sensors | 7 bytes | Name "BR", UUID 0x27a5 | Reference |
+| SYTPMS-6byte | SYTPMS sensors | 6 bytes | Name "TPMS", 6-byte data | Reference |
+| Generic | Unknown sensors | 4+ bytes | Fallback with heuristics | Always |
 
-**Tested with:** https://aliexpress.com/item/1005004504977890.html
+**Tested with:** Generic external BLE TPMS cap sensors (ZEEPIN/TP630-compatible, widely sold on AliExpress)
 
 New sensor types can be added via the modular decoder system. See [DECODER_GUIDE.md](DECODER_GUIDE.md).
 
@@ -46,7 +47,7 @@ BLE TPMS Monitor - Interactive
 
 Current Configuration:
   Front Left         (AC:15:85:C3:A2:01)
-  Front Right        (AC:15:85:C3:A2:02)
+  Rear Left          (82:EA:CA:33:4F:E2)
 
 Options:
   1 - Discover and select sensors
@@ -66,11 +67,11 @@ Options:
 ### Device Discovery
 
 ```
-#    MAC Address          Name       RSSI   Decoder          TPMS?
+#    MAC Address          Name            RSSI   Decoder          TPMS?
 ---------------------------------------------------------------------------
-1    AC:15:85:C3:A2:01   BR         -45    BR-7byte         BR Sensor
-2    AC:15:85:C3:A2:02   BR         -48    BR-7byte         BR Sensor
-3    AA:BB:CC:DD:EE:FF   Unknown    -72    Unknown
+1    82:EA:CA:33:4F:E2   TPMS3_334FE2   -45    TPMS3-16byte     TPMS Sensor
+2    AC:15:85:C3:A2:01   BR             -48    BR-7byte         BR Sensor
+3    AA:BB:CC:DD:EE:FF   Unknown        -72    Unknown
 ```
 
 Select sensors by number, or press `a` to auto-select all detected TPMS devices.
@@ -78,13 +79,38 @@ Select sensors by number, or press `a` to auto-select all detected TPMS devices.
 ### Live Monitoring
 
 ```
-Sensor          Decoder      Pressure                Temp    Battery   Status     HEX Packet        Age
----------------------------------------------------------------------------------------------------------
-Front Left      BR-7byte     2.15 bar (31.2 psi)     22C     2.9V      ROTAT      281d160105a376    5s ago
-Front Right     BR-7byte     2.10 bar (30.5 psi)     23C     3.0V      STILL      291e170106b487    3s ago
+Sensor          Decoder        Pressure                Temp    Battery   Note              HEX Packet
+------------------------------------------------------------------------------------------------------
+Rear Left       TPMS3-16byte   1.82 bar (26.4 psi)     29C     100%      Pos:RL Abs:40.9   82eaca334fe2...
+Front Left      BR-7byte       2.15 bar (31.2 psi)     22C     2.9V      ROTAT             281d160105a376
 ```
 
 Press `Ctrl+C` to stop monitoring and return to menu.
+
+## Sensor Behavior
+
+### TPMS{N} Sensors (most common)
+
+**Sleep / Wake cycle:**
+- **Deep sleep** - No broadcasts. Default when stationary for extended period
+- **Stationary wake** - Brief broadcast every 2-15 minutes (internal timer)
+- **Motion active** - Broadcasts every 10-30 seconds when wheel is rotating
+- **Pressure event** - Immediate burst on rapid pressure change
+
+**Wake triggers:**
+- Sustained wheel rotation (driving speed, not just a brief spin)
+- Pressure change (inflating/deflating)
+- Internal timer (2-15 min intervals)
+
+**Tip:** If no sensor is detected, try spinning the tire at speed, or briefly deflate/inflate to trigger a pressure-change wake.
+
+**Valve interaction:** External cap sensors depress the Schrader valve core pin when fully screwed on. Some have a twist-lock mechanism that must be engaged to access tire pressure. Without this, the sensor only reads atmospheric pressure.
+
+### BR Sensors
+
+- **Rotating:** Frequent broadcasts (~10-30s) above 4 km/h
+- **Stationary:** Every 2-5 minutes
+- **Pressure change:** Immediate transmission on >0.5 psi change
 
 ## Requirements
 
@@ -92,7 +118,7 @@ Press `Ctrl+C` to stop monitoring and return to menu.
 - Bluetooth adapter
 - Linux, macOS, or Windows
 
-Dependencies are installed automatically by `setup.sh`:
+Dependencies installed automatically by `setup.sh`:
 - `bleak` - Cross-platform BLE library (no sudo required)
 - `colorama` - Colored terminal output
 
@@ -114,62 +140,26 @@ TPMS/
 
 ## Adding New Sensor Types
 
-The modular decoder system makes it easy to support new TPMS sensors:
-
 1. Create a decoder class in `sensor_decoders.py`
 2. Implement `can_decode()` to identify your sensor
 3. Implement `decode()` to parse the data
 4. Register it in the factory
 
-See [DECODER_GUIDE.md](DECODER_GUIDE.md) for a complete guide with examples and reverse-engineering tips.
-
-## Data Format
-
-**Output fields:**
-- **Sensor** - Friendly name (configured during discovery)
-- **Decoder** - Which decoder parsed the data
-- **Pressure** - Relative pressure in BAR and PSI
-- **Temp** - Temperature in Celsius
-- **Battery** - Voltage (V)
-- **Status** - Sensor status flags
-- **HEX Packet** - Raw manufacturer data
-
-**Status Flags:**
-
-| Flag | Meaning |
-|------|---------|
-| ALARM | Zero pressure alarm |
-| ROTAT | Wheel rotating (>4 km/h) |
-| STILL | Standing still for ~15 minutes |
-| BGROT | Begin rotating (transition) |
-| DECR2 | Pressure decreasing below 20.7 psi |
-| RISIN | Pressure rising |
-| DECR1 | Pressure decreasing above 20.7 psi |
-| LBATT | Low battery warning |
-
-See [PROTOCOL.md](PROTOCOL.md) for full protocol details.
-
-## Sensor Behavior
-
-- **Pressure change:** Immediate transmission
-- **Stationary:** Transmits every 2-5 minutes
-- **Rotating:** More frequent (~10-30 seconds) above 4 km/h
-- **Activation:** Pressurize above 10 psi (0.7 bar)
-- **Battery:** CR1632, ~1-2 year lifespan, LBATT flag below ~2.5V
+See [DECODER_GUIDE.md](DECODER_GUIDE.md) for a complete guide with a real-world reverse-engineering case study.
 
 ## Troubleshooting
 
 ### No sensors detected
 - Verify Bluetooth is enabled
-- Ensure sensors are pressurized (>10 psi)
-- Try spinning the wheel to trigger transmission
-- Use a BLE scanner app (e.g., nRF Connect) to verify sensor MAC addresses
+- Sensors may be in deep sleep - spin the tire or change pressure to wake them
+- Try a longer scan duration
+- Use a BLE scanner app (e.g., nRF Connect) to verify the sensor is broadcasting
 - Move closer to sensors (<5m)
 
-### Invalid checksums
-- Move closer to sensors
-- Reduce Bluetooth congestion
-- Checksum algorithm may need refinement for your sensor model
+### Sensor reads ~0 PSI gauge on a tire
+- The twist-lock mechanism may not be engaged
+- Sensor must fully depress the Schrader valve core to read tire pressure
+- Without engagement, it correctly reads atmospheric pressure (~14.5 PSI absolute = ~0 gauge)
 
 ### Setup issues
 - If `pip install` fails with "externally-managed-environment", use `./setup.sh` (uses venv)
@@ -177,10 +167,12 @@ See [PROTOCOL.md](PROTOCOL.md) for full protocol details.
 
 ## References
 
-- https://www.instructables.com/BLE-Direct-Tire-Pressure-Monitoring-System-TPMS-Di/
-- https://github.com/ra6070/BLE-TPMS
-- https://forum.arduino.cc/t/arduino-ble-tpms-capteur-pression-pneus/592030/60
-- Bluetooth Assigned Numbers: https://www.bluetooth.com/specifications/assigned-numbers/
+- **TPMS Protocol Details:** [PROTOCOL.md](PROTOCOL.md)
+- **Home Assistant ESPHome TPMS:** https://community.home-assistant.io/t/ble-tire-pressure-monitor/509927
+- **ricallinson/tpms:** https://github.com/ricallinson/tpms
+- **bkbilly/tpms_ble:** https://github.com/bkbilly/tpms_ble
+- **theengs/decoder:** https://decoder.theengs.io/devices/TPMS.html
+- **Instructables BLE TPMS:** https://www.instructables.com/BLE-Direct-Tire-Pressure-Monitoring-System-TPMS-Di/
 
 ## License
 

@@ -12,6 +12,6 @@ tpms_config.json
 # CSV log files
 *.csv
 
-# OS files
-.DS_Store
-Thumbs.db
+# Hidden/dot files and folders
+.*
+!.gitignore

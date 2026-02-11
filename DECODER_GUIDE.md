@@ -2,12 +2,10 @@
 
 ## Overview
 
-The modular decoder system allows you to support **multiple TPMS sensor types** without modifying the core application. Each sensor type has its own decoder class that handles identification and data parsing.
-
-## How It Works
+The modular decoder system supports multiple TPMS sensor types without modifying the core application. Each sensor type has its own decoder class that handles identification and data parsing.
 
 ```
-BLE Device → Factory → Decoder Selection → Data Parsing → Standard Output
+BLE Device -> Factory -> Decoder Selection -> Data Parsing -> Standard Output
 ```
 
 1. **Factory** receives device info (name, UUIDs, manufacturer data)
@@ -17,11 +15,12 @@ BLE Device → Factory → Decoder Selection → Data Parsing → Standard Outpu
 
 ## Built-in Decoders
 
-| Decoder | Manufacturer | Data Length | Checksum | Notes |
-|---------|--------------|-------------|----------|-------|
-| BR-7byte | Generic BR | 7 bytes | 16-bit sum | Default sensor (0x27a5 UUID) |
-| SYTPMS-6byte | SYTPMS | 6 bytes | XOR | Example alternative format |
-| Generic | Unknown | 4+ bytes | None | Fallback with heuristics |
+| Decoder | Manufacturer | Data Size | ID Method | Status |
+|---------|-------------|-----------|-----------|--------|
+| **TPMS3-16byte** | Generic BLE TPMS (ZEEPIN/TP630-type) | 16 bytes | Name `TPMS{N}_*`, CID 0x0100 | **Tested & Confirmed** |
+| BR-7byte | Generic BR | 7 bytes | Name "BR", UUID 0x27a5 | Reference |
+| SYTPMS-6byte | SYTPMS | 6 bytes | Name "TPMS", 6-byte data | Reference |
+| Generic | Unknown | 4+ bytes | Fallback | Always available |
 
 ## Adding a New Sensor Type
 
@@ -39,249 +38,172 @@ class MyTPMSDecoder(TPMSDecoder):
 
     @property
     def manufacturer(self) -> str:
-        return "Acme Corp"  # Manufacturer name
+        return "Acme Corp"
 
     def can_decode(self, device_name: str, service_uuids: list, mfdata: bytes) -> bool:
-        """
-        Identify your sensor.
-        Return True if this decoder can handle the data.
-        """
+        """Return True if this decoder can handle the data."""
         # Method 1: Check device name
         if device_name == "ACME-TPMS":
             return True
-
-        # Method 2: Check service UUID
-        if service_uuids and "1234" in str(service_uuids).lower():
+        # Method 2: Check data pattern / length
+        if len(mfdata) == 8 and mfdata[0] == 0xFF:
             return True
-
-        # Method 3: Check data pattern
-        if len(mfdata) == 8:  # Your specific length
-            # Additional checks (e.g., first byte is always 0xFF)
-            if mfdata[0] == 0xFF:
-                return True
-
         return False
 
     def decode(self, mfdata: bytes) -> Optional[Dict[str, Any]]:
         """
-        Parse your sensor's data format.
-
-        MUST return dict with these fields:
-        - status: int
-        - battery: float (volts)
-        - temperature: int (Celsius)
-        - pressure_bar: float
-        - pressure_psi: float
-        - hex_data: str
-        - decoder: str (self.name)
-        - valid: bool (checksum OK)
+        Parse sensor data. MUST return dict with these fields:
+        - status, battery, temperature
+        - pressure_bar, pressure_psi
+        - hex_data, decoder, valid
         """
         if len(mfdata) < 8:
             return None
 
-        # Your parsing logic
-        status = mfdata[0]
-        temperature = mfdata[1] - 40  # Example: offset encoding
+        # Your parsing logic here
+        temperature = mfdata[1] - 40
         pressure_kpa = (mfdata[2] << 8) | mfdata[3]
-        battery_raw = mfdata[4]
-
-        # Convert to standard units
-        battery = battery_raw / 10.0
         pressure_bar = pressure_kpa / 100.0
-        pressure_psi = pressure_bar * 14.5038
-
-        # Validate checksum (your algorithm)
-        checksum_calc = sum(mfdata[0:7])
-        valid = (checksum_calc & 0xFF) == mfdata[7]
-
-        hex_data = ''.join(f'{b:02x}' for b in mfdata)
+        pressure_psi = pressure_bar / 0.0689476
 
         return {
-            'status': status,
-            'battery': battery,
+            'status': mfdata[0],
+            'battery': mfdata[4] / 10.0,
             'temperature': temperature,
             'pressure_bar': pressure_bar,
             'pressure_psi': pressure_psi,
-            'hex_data': hex_data,
+            'hex_data': mfdata.hex(),
             'decoder': self.name,
-            'valid': valid
+            'valid': True,
         }
 ```
 
 ### Step 2: Register Decoder
 
-In `sensor_decoders.py`, add to the factory:
+In `sensor_decoders.py`, add to the factory's `__init__`:
 
 ```python
 class TPMSDecoderFactory:
     def __init__(self):
         self.decoders = [
             BRTPMSDecoder(),
+            TPMS3Decoder(),
             SYTPMSDecoder(),
-            MyTPMSDecoder(),      # ← Add your decoder here
-            GenericTPMSDecoder(), # Always keep Generic last
+            MyTPMSDecoder(),       # <-- Add before GenericTPMSDecoder
+            GenericTPMSDecoder(),  # Always keep Generic last
         ]
 ```
 
-### Step 3: Test Your Decoder
+### Step 3: Test
 
 ```bash
-# Run the decoder test
+# Run the decoder self-test
 python3 sensor_decoders.py
 
-# Test with interactive tool
-./run-interactive.sh
-# Select option 5 to list decoders
-# Select option 1 to discover devices
+# Test with the interactive tool
+./run.sh
+# Option 5 to list decoders
+# Option 1 to discover devices
 ```
 
-## Real-World Example: Reverse Engineering a New Sensor
+## Real-World Case Study: Reverse Engineering TPMS3
 
-### 1. Capture Raw Data
+This is how we decoded the TPMS3 sensor format from scratch.
 
-Run the tool with `SHOW_HEX_PACKETS = True` and collect packets:
+### 1. Initial Discovery
 
-```
-Unknown Sensor: 85:c3:a2  HEX: ff1c0e01a5b3c8
-Unknown Sensor: 85:c3:a2  HEX: ff1d0e01a6d2e9
-Unknown Sensor: 85:c3:a2  HEX: ff1d0f01a7e1fa
-```
+Ran BLE scan and found device `TPMS3_334FE2` with Company ID `0x0100` and 16-byte manufacturer data.
 
-### 2. Analyze Patterns
-
-Compare multiple readings:
+### 2. First Packet Capture
 
 ```
-Packet 1: ff 1c 0e 01 a5 b3 c8
-Packet 2: ff 1d 0e 01 a6 d2 e9
-Packet 3: ff 1d 0f 01 a7 e1 fa
-          │  │  │  └──┴── Changes (pressure?)
-          │  │  └──────── Changes (temp?)
-          │  └─────────── Changes (battery?)
-          └────────────── Constant (status?)
+82eaca334fe2 f5 01 03 00 52 0b 00 00 64 00
 ```
 
-### 3. Identify Fields
+First 6 bytes (`82:EA:CA:33:4F:E2`) matched the BLE MAC address exactly.
 
-- Byte 0: `0xFF` constant → Status/header
-- Byte 1: `0x1C→0x1D→0x1D` → Battery? Temperature?
-- Byte 2: `0x0E→0x0E→0x0F` → Temperature? (14°C→15°C)
-- Bytes 3-4: `0x01A5→0x01A6→0x01A7` → Pressure (421→422→423 = ~42 psi)
-- Bytes 5-6: Varies → Checksum
+### 3. Initial (Wrong) Hypothesis
 
-### 4. Test Hypotheses
+We assumed each remaining byte was a separate field:
+```
+[6]=header [7]=position [8]=status [9]=alarm [10-11]=temp [12-13]=pressure [14]=battery [15]=end
+```
+
+This gave temperature 29C (correct!) but pressure always 0 (wrong!).
+
+### 4. The Mystery: Bytes 6-7 "Changing Wildly"
+
+Multiple captures showed bytes 6-7 changing dramatically:
+```
+f5 01 ...  (desk)
+e8 f0 ...  (desk)
+3f da ...  (tire loose)
+21 c1 ...  (tire locked)
+```
+
+We couldn't explain what these were.
+
+### 5. Research Breakthrough
+
+Web search found the [Home Assistant ESPHome community](https://community.home-assistant.io/t/ble-tire-pressure-monitor/509927) had already decoded this format. **Bytes 6-9 are a 32-bit pressure value in Pascals (little-endian).**
+
+### 6. Corrected Decode
 
 ```python
-def decode(self, mfdata: bytes) -> Optional[Dict[str, Any]]:
-    # Hypothesis testing
-    temp1 = mfdata[1]  # Try as direct temp
-    temp2 = mfdata[2]  # Try as direct temp
-
-    pressure_raw = (mfdata[3] << 8) | mfdata[4]
-    pressure_psi = pressure_raw / 10.0  # Try different divisors
-
-    print(f"Temp1: {temp1}°C, Temp2: {temp2}°C")
-    print(f"Pressure: {pressure_psi} psi")
-    # Compare with known values
+pressure_pa = data[6] | (data[7] << 8) | (data[8] << 16) | (data[9] << 24)
+# Desk reading: 0x000301f5 = 197,109 Pa = 28.6 PSI absolute = 14.1 PSI gauge
+# This is atmospheric pressure - CORRECT for a sensor on a desk!
 ```
 
-### 5. Validate Checksum
+### 7. Lesson Learned
 
-Try common algorithms:
-
-```python
-# Method 1: Sum
-checksum = sum(mfdata[0:5]) & 0xFFFF
-
-# Method 2: XOR
-checksum = mfdata[0] ^ mfdata[1] ^ mfdata[2] ^ mfdata[3] ^ mfdata[4]
-
-# Method 3: CRC-16
-import crcmod
-crc16 = crcmod.predefined.Crc('crc-16')
-crc16.update(mfdata[0:5])
-checksum = crc16.crcValue
-
-# Compare with bytes 5-6
-received = (mfdata[5] << 8) | mfdata[6]
-```
+The "wildly changing" bytes were actually the low-order bytes of a 4-byte integer. The high bytes (8-9) were relatively stable (`03 00`, `02 00`) because they represent ~190 kPa which only varies slightly. Always consider multi-byte fields before assuming single-byte fields.
 
 ## Common Patterns
+
+### Pressure Units
+
+| Sensor Type | Raw Unit | To PSI | To bar |
+|-------------|----------|--------|--------|
+| TPMS3 | Pascals (32-bit) | `* 0.000145038` | `* 0.00001` |
+| BR | 0.1 PSI (16-bit) | `/ 10.0` | `/ 10.0 * 0.0689476` |
+| Most sensors | kPa (16-bit) | `* 0.145038` | `/ 100.0` |
+
+All sensors report **absolute pressure**. Subtract 14.5 PSI (1 atm) for gauge pressure.
 
 ### Data Encoding
 
 | Type | Example | Decoding |
 |------|---------|----------|
-| Direct | `0x1E` = 30°C | `value` |
-| Offset | `0x3E` = 22°C | `value - 40` |
+| Direct | `0x1E` = 30C | `value` |
+| Offset | `0x3E` = 22C | `value - 40` |
 | Scaled | `0x1D` = 2.9V | `value / 10` |
-| Big-endian 16-bit | `0x01A5` = 421 | `(byte1 << 8) \| byte2` |
-| Signed byte | `0xF0` = -16°C | `value - 256 if value > 127` |
+| LE 16-bit | `52 0b` = 2898 | `byte0 \| (byte1 << 8)` |
+| LE 32-bit | `f5 01 03 00` = 197109 | `b0 \| (b1<<8) \| (b2<<16) \| (b3<<24)` |
+| Signed byte | `0xF0` = -16C | `value - 256 if value > 127` |
 
 ### Checksum Algorithms
 
-| Type | Description | Example |
-|------|-------------|---------|
-| Sum | Add all bytes | `sum(data[0:5]) & 0xFFFF` |
-| XOR | XOR all bytes | `data[0] ^ data[1] ^ ...` |
-| CRC-16 | Polynomial checksum | `crcmod` library |
-| None | No validation | Always `valid = True` |
-
-## Pressure Conversion
-
-Most sensors report **absolute pressure** in various units:
-
-```python
-# From kPa to bar
-pressure_bar = pressure_kpa / 100.0
-
-# From psi (absolute) to bar (relative)
-pressure_rel_psi = pressure_abs_psi - 14.5  # Subtract atmospheric
-pressure_bar = pressure_rel_psi * 0.0689476
-
-# From bar (relative) to psi
-pressure_psi = pressure_bar * 14.5038
-```
+| Type | Description |
+|------|-------------|
+| Sum | `sum(data[0:N]) & 0xFFFF` |
+| XOR | `data[0] ^ data[1] ^ ...` |
+| CRC-16 | Polynomial (use `crcmod`) |
+| None | TPMS3 has no checksum |
 
 ## Tips
 
-1. **Start with device name/UUID** - Easiest identification method
-2. **Collect many samples** - Need variations to identify fields
-3. **Test edge cases** - Low battery, temperature extremes, zero pressure
-4. **Document your findings** - Add comments explaining the format
-5. **Share discoveries** - Submit decoders for inclusion in the project
+1. **Start with device name / company ID** - easiest identification
+2. **Collect many samples** - you need variation to identify fields
+3. **Consider multi-byte fields** - bytes that "change wildly" may be low-order bytes of a larger integer
+4. **Check community sources** - Home Assistant, ESPHome, Arduino forums often have decoded formats
+5. **Absolute vs gauge** - sensors read atmospheric pressure on a desk, which is expected and correct
 
-## Debugging
+## Useful References
 
-Enable detailed output:
-
-```python
-def decode(self, mfdata: bytes) -> Optional[Dict[str, Any]]:
-    print(f"[{self.name}] Decoding: {mfdata.hex()}")
-    # ... your code ...
-    print(f"[{self.name}] Result: {result}")
-    return result
-```
-
-## Example: Adding SYTPMS Support
-
-See `SYTPMSDecoder` class in `sensor_decoders.py` for a complete example of an alternative format with:
-- Different byte order
-- XOR checksum
-- Offset temperature encoding
-- kPa pressure units
-
-## Contributing
-
-Found a new sensor type? Please contribute!
-
-1. Create decoder class following the template
-2. Test with real sensors
-3. Document the protocol format
-4. Submit a pull request or issue
-
-## Reference
-
-- **Bluetooth Assigned Numbers:** https://www.bluetooth.com/specifications/assigned-numbers/
-- **CRC Algorithms:** https://reveng.sourceforge.io/crc-catalogue/
-- **TPMS Protocols:** https://github.com/merbanan/rtl_433/tree/master/src/devices
+- **Home Assistant ESPHome TPMS:** https://community.home-assistant.io/t/ble-tire-pressure-monitor/509927
+- **bkbilly/tpms_ble:** https://github.com/bkbilly/tpms_ble
+- **theengs/decoder:** https://decoder.theengs.io/devices/TPMS.html
+- **ricallinson/tpms:** https://github.com/ricallinson/tpms
+- **CRC Catalogue:** https://reveng.sourceforge.io/crc-catalogue/
+- **rtl_433 TPMS:** https://github.com/merbanan/rtl_433/tree/master/src/devices

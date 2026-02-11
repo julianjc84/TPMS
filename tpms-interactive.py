@@ -33,7 +33,7 @@ except ImportError:
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
-from sensor_decoders import TPMSDecoderFactory
+from sensor_decoders import TPMSDecoderFactory, TPMS3Decoder
 
 # Resolve paths relative to script location (not CWD)
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -127,7 +127,11 @@ def load_config():
 def decode_sensor_data(device_name, service_uuids, mfdata):
     """Decode manufacturer data using the appropriate decoder."""
     decoder = decoder_factory.get_decoder(device_name, service_uuids, mfdata)
-    result = decoder.decode(mfdata)
+    # Pass device_name to decoders that use it (e.g., TPMS3 for position)
+    if isinstance(decoder, TPMS3Decoder):
+        result = decoder.decode(mfdata, device_name=device_name)
+    else:
+        result = decoder.decode(mfdata)
     if result:
         result['timestamp'] = time.time()
         result['device_name'] = device_name
