@@ -17,7 +17,7 @@ BLE Device -> Factory -> Decoder Selection -> Data Parsing -> Standard Output
 
 | Decoder | Manufacturer | Data Size | ID Method | Status |
 |---------|-------------|-----------|-----------|--------|
-| **TPMS3-16byte** | Generic BLE TPMS (ZEEPIN/TP630-type) | 16 bytes | Name `TPMS{N}_*`, CID 0x0100 | **Tested & Confirmed** |
+| **TPMS3-16byte** | Generic BLE TPMS (VSTM/ZEEPIN/TP630-type) | 16 bytes | Name `TPMS{N}_*`, CID 0x0100 | **Tested & Confirmed** |
 | BR-7byte | Generic BR | 7 bytes | Name "BR", UUID 0x27a5 | Reference |
 | SYTPMS-6byte | SYTPMS | 6 bytes | Name "TPMS", 6-byte data | Reference |
 | Generic | Unknown | 4+ bytes | Fallback | Always available |

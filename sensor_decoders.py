@@ -217,16 +217,15 @@ class TPMS3Decoder(TPMSDecoder):
     MM MM MM MM MM MM PP PP PP PP TT TT UU UU BB FF
 
     - MMMMMMMMMMMM: MAC address (6 bytes)
-    - PPPPPPPP: Absolute pressure in Pascals (uint32, little-endian)
+    - PPPPPPPP: Gauge pressure in Pascals (uint32, little-endian). 0 = atmospheric.
     - TTTT: Temperature in 0.01°C (uint16, little-endian)
     - UUUU: Unknown / reserved (always 0x0000 observed)
     - BB: Battery percentage (0-100)
-    - FF: Unknown / flags (always 0x00 observed)
+    - FF: Flags (0x00 = normal, 0x01 = low pressure alarm)
 
-    Pressure conversion: Pa * 0.000145038 = PSI absolute
-    Subtract ~14.5 PSI (1 atm) for gauge pressure.
+    Pressure conversion: Pa * 0.000145038 = PSI gauge (no atmospheric subtraction needed)
 
-    Source: HA ESPHome community, ricallinson/tpms, mtigas/iOS-BLE-Tire-Logger
+    Source: Real-world testing, HA ESPHome community, ricallinson/tpms
     """
 
     PA_TO_PSI = 0.000145038
@@ -238,7 +237,7 @@ class TPMS3Decoder(TPMSDecoder):
 
     @property
     def manufacturer(self) -> str:
-        return "Generic BLE TPMS (ZEEPIN/TP630-type)"
+        return "Generic BLE TPMS (VSTM/ZEEPIN/TP630-type)"
 
     def can_decode(self, device_name: str, service_uuids: list, mfdata: bytes) -> bool:
         # Match device name pattern "TPMS{N}_XXXXXX"
@@ -265,17 +264,17 @@ class TPMS3Decoder(TPMSDecoder):
         if len(mfdata) < 16:
             return None
 
-        # Bytes 6-9: Pressure (uint32 little-endian, Pascals)
+        # Bytes 6-9: Pressure (uint32 little-endian, gauge Pascals)
+        # The sensor reports GAUGE pressure directly (0 = atmospheric).
+        # No atmospheric subtraction needed.
         pressure_pa = (
             mfdata[6]
             | (mfdata[7] << 8)
             | (mfdata[8] << 16)
             | (mfdata[9] << 24)
         )
-        pressure_psi_abs = pressure_pa * self.PA_TO_PSI
-        pressure_psi = pressure_psi_abs - ATM_PSI  # Gauge pressure
-        pressure_bar = pressure_pa * self.PA_TO_BAR  # Absolute bar
-        pressure_bar_gauge = pressure_bar - 1.01325  # Subtract 1 atm
+        pressure_psi = pressure_pa * self.PA_TO_PSI
+        pressure_bar = pressure_pa * self.PA_TO_BAR
 
         # Bytes 10-11: Temperature (uint16 little-endian, 0.01°C)
         temp_raw = mfdata[10] | (mfdata[11] << 8)
@@ -295,14 +294,14 @@ class TPMS3Decoder(TPMSDecoder):
             'battery': battery_v,
             'battery_pct': battery_pct,
             'temperature': temperature,
-            'pressure_bar': pressure_bar_gauge,
+            'pressure_bar': pressure_bar,
             'pressure_psi': pressure_psi,
             'pressure_kpa': pressure_pa / 1000.0,
             'position': pos_label,
             'hex_data': to_hex(mfdata),
             'decoder': self.name,
             'valid': True,
-            'note': f'Pos:{pos_label} Batt:{battery_pct}% Abs:{pressure_psi_abs:.1f}psi',
+            'note': f'Pos:{pos_label} Batt:{battery_pct}%',
         }
 
 
@@ -416,18 +415,26 @@ if __name__ == "__main__":
     # a different checksum algorithm. The simple-sum method needs validation
     # against live sensor data. See PROTOCOL.md for details.
 
-    # Test TPMS3 decoder with real captured packet (desk, atmospheric pressure)
-    tpms3_data = bytes.fromhex("82eaca334fe2f5010300520b00006400")
-    print(f"\nTest TPMS3 sensor packet: {tpms3_data.hex()}")
+    # Test TPMS3 decoder with real captured packet (on tire, ~30 PSI gauge)
+    tpms3_data = bytes.fromhex("82eaca334fe2d91e0300f40900006200")
+    print(f"\nTest TPMS3 sensor packet (on tire): {tpms3_data.hex()}")
     decoder3 = factory.get_decoder("TPMS3_334FE2", [], tpms3_data)
     print(f"  Decoder:     {decoder3.name}")
     result3 = decoder3.decode(tpms3_data, device_name="TPMS3_334FE2")
     if result3:
-        print(f"  Pressure:    {result3['pressure_bar']:.2f} bar gauge ({result3['pressure_psi']:.1f} psi gauge)")
-        print(f"  Pressure:    {result3['pressure_kpa']:.1f} kPa absolute")
+        print(f"  Pressure:    {result3['pressure_bar']:.2f} bar ({result3['pressure_psi']:.1f} psi)")
+        print(f"  Pressure:    {result3['pressure_kpa']:.1f} kPa")
         print(f"  Temperature: {result3['temperature']}C")
         print(f"  Battery:     {result3['battery_pct']}%")
         print(f"  Position:    {result3['position']}")
-        print(f"  Note:        {result3['note']}")
+
+    # Test TPMS3 ambient (off tire, should be ~0 PSI)
+    tpms3_amb = bytes.fromhex("82eaca334fe200000000250800006301")
+    print(f"\nTest TPMS3 sensor packet (ambient): {tpms3_amb.hex()}")
+    result_amb = decoder3.decode(tpms3_amb, device_name="TPMS3_334FE2")
+    if result_amb:
+        print(f"  Pressure:    {result_amb['pressure_bar']:.2f} bar ({result_amb['pressure_psi']:.1f} psi)")
+        print(f"  Temperature: {result_amb['temperature']}C")
+        print(f"  Battery:     {result_amb['battery_pct']}%")
     else:
         print("  Decode failed")

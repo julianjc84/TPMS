@@ -18,12 +18,12 @@ Interactive desktop tool to monitor external TPMS sensors via Bluetooth Low Ener
 
 | Decoder | Sensor Type | Data Size | Identification | Status |
 |---------|------------|-----------|----------------|--------|
-| **TPMS3-16byte** | Generic BLE TPMS (ZEEPIN/TP630) | 16 bytes | Name `TPMS{N}_*`, CID 0x0100 | **Tested** |
+| **TPMS3-16byte** | Generic BLE TPMS (VSTM/ZEEPIN/TP630) | 16 bytes | Name `TPMS{N}_*`, CID 0x0100 | **Tested** |
 | BR-7byte | Generic "BR" sensors | 7 bytes | Name "BR", UUID 0x27a5 | Reference |
 | SYTPMS-6byte | SYTPMS sensors | 6 bytes | Name "TPMS", 6-byte data | Reference |
 | Generic | Unknown sensors | 4+ bytes | Fallback with heuristics | Always |
 
-**Tested with:** Generic external BLE TPMS cap sensors (ZEEPIN/TP630-compatible, widely sold on AliExpress)
+**Tested with:** Generic external BLE TPMS cap sensors (VSTM/Visture, ZEEPIN/TP630, WISTEK, and other rebranded variants widely sold on AliExpress/Amazon)
 
 New sensor types can be added via the modular decoder system. See [DECODER_GUIDE.md](DECODER_GUIDE.md).
 
@@ -91,20 +91,27 @@ Press `Ctrl+C` to stop monitoring and return to menu.
 
 ### TPMS{N} Sensors (most common)
 
+**Primary wake trigger is PRESSURE CHANGE, not motion.** These cheap cap sensors do not have a true accelerometer - they use a basic roll switch that only works at driving speeds. Rolling or spinning the sensor by hand will NOT wake it.
+
 **Sleep / Wake cycle:**
-- **Deep sleep** - No broadcasts. Default when stationary for extended period
-- **Stationary wake** - Brief broadcast every 2-15 minutes (internal timer)
-- **Motion active** - Broadcasts every 10-30 seconds when wheel is rotating
-- **Pressure event** - Immediate burst on rapid pressure change
+- **Storage / Deep sleep** - No broadcasts. Factory default; extended inactivity
+- **Idle (pressurized)** - Broadcasts every 1-5 minutes with stable pressure
+- **Active (driving)** - Broadcasts every 10-30 seconds (roll switch detects rotation)
+- **Pressure event** - Immediate burst on pressure change >1.2 PSI
 
-**Wake triggers:**
-- Sustained wheel rotation (driving speed, not just a brief spin)
-- Pressure change (inflating/deflating)
-- Internal timer (2-15 min intervals)
+**What wakes the sensor:**
+- Pressure change (primary) - inflating, deflating, screwing onto a valve, blowing air into it
+- Sustained wheel rotation at driving speed (>15-20 km/h)
+- Internal timer (2-15 min periodic check)
 
-**Tip:** If no sensor is detected, try spinning the tire at speed, or briefly deflate/inflate to trigger a pressure-change wake.
+**What does NOT wake the sensor:**
+- Rolling it on a table
+- Brief hand spins
+- Shaking or tapping
 
-**Valve interaction:** External cap sensors depress the Schrader valve core pin when fully screwed on. Some have a twist-lock mechanism that must be engaged to access tire pressure. Without this, the sensor only reads atmospheric pressure.
+**Tip:** If no sensor is detected, deflate/inflate the tire slightly, or slowly screw the sensor on/off the valve to create air flow. See [PROTOCOL.md](PROTOCOL.md) for full details.
+
+**Valve interaction:** An internal pin depresses the Schrader valve core when the sensor is screwed on, opening an air path. A twist-lock nut must be engaged for a proper seal. Without engagement, the sensor only reads atmospheric pressure (~0 PSI gauge).
 
 ### BR Sensors
 
@@ -151,8 +158,10 @@ See [DECODER_GUIDE.md](DECODER_GUIDE.md) for a complete guide with a real-world 
 
 ### No sensors detected
 - Verify Bluetooth is enabled
-- Sensors may be in deep sleep - spin the tire or change pressure to wake them
-- Try a longer scan duration
+- **Sensor is likely asleep** - these sensors wake on PRESSURE CHANGE, not motion
+- To wake: deflate/inflate the tire briefly, or slowly screw the sensor on/off a valve
+- Rolling or shaking the sensor will NOT wake it
+- Use the interactive discovery (option 1) and keep scanning in 5-second rounds
 - Use a BLE scanner app (e.g., nRF Connect) to verify the sensor is broadcasting
 - Move closer to sensors (<5m)
 

@@ -47,6 +47,7 @@ DEDUP_INTERVAL = 1.0  # Minimum seconds between updates per sensor
 decoder_factory = TPMSDecoderFactory()
 monitored_sensors = {}
 sensor_data = {}
+packet_stats = {}    # MAC -> {'count': int, 'timestamps': list, 'history': list}
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -140,13 +141,48 @@ def decode_sensor_data(device_name, service_uuids, mfdata):
 
 # ── Discovery ────────────────────────────────────────────────────────────
 
-async def discover_devices(duration=10):
-    """Scan for nearby BLE devices and return results."""
+async def discover_devices(round_duration=5):
+    """Live BLE discovery in 5-second rounds. Shows devices as they appear."""
     devices = {}
+    last_count = 0
 
-    print(f"{Fore.YELLOW}Scanning for BLE devices ({duration}s)...{Style.RESET_ALL}")
+    def _print_table():
+        """Redraw the device table."""
+        clear_screen()
+        tpms_count = sum(
+            1 for d in devices.values()
+            if d['decoder'] not in ("Unknown", "Generic")
+        )
+        configured_macs = set(monitored_sensors.keys())
+
+        print(f"{Fore.CYAN}{Style.BRIGHT}BLE Device Discovery{Style.RESET_ALL}"
+              f"  |  {Fore.GREEN}{len(devices)} found{Style.RESET_ALL}"
+              f"  |  {Fore.GREEN}{tpms_count} TPMS{Style.RESET_ALL}\n")
+
+        print(f"{Fore.CYAN}{Style.BRIGHT}"
+              f"{'#':<4} {'MAC Address':<20} {'Name':<20} {'RSSI':<6} "
+              f"{'Decoder':<18} {'TPMS?'}"
+              f"{Style.RESET_ALL}")
+        print("-" * 95)
+
+        devices_list = sorted(devices.items())
+        for idx, (mac, info) in enumerate(devices_list, 1):
+            is_tpms = info['decoder'] not in ("Unknown", "Generic")
+            indicator = ""
+            if mac in configured_macs:
+                indicator = f"{Fore.BLUE}[configured]{Style.RESET_ALL}"
+            elif is_tpms:
+                indicator = f"{Fore.GREEN}Yes ({info['decoder']}){Style.RESET_ALL}"
+            elif info['decoder'] == "Generic":
+                indicator = f"{Fore.YELLOW}? (Generic){Style.RESET_ALL}"
+
+            color = Fore.GREEN if is_tpms else Fore.WHITE
+            print(f"{color}{idx:<4} {mac:<20} {info['name'][:20]:<20} "
+                  f"{info['rssi']:<6} {info['decoder']:<18} {indicator}"
+                  f"{Style.RESET_ALL}")
 
     def on_device(device: BLEDevice, adv: AdvertisementData):
+        nonlocal last_count
         mac = normalize_mac(device.address)
 
         # Identify decoder type from manufacturer data
@@ -159,7 +195,8 @@ async def discover_devices(duration=10):
             decoder_name = decoder.name
 
         # Keep strongest signal per device
-        if mac not in devices or adv.rssi > devices[mac]['rssi']:
+        is_new = mac not in devices
+        if is_new or adv.rssi > devices[mac]['rssi']:
             devices[mac] = {
                 'name': device.name or "Unknown",
                 'rssi': adv.rssi,
@@ -167,43 +204,85 @@ async def discover_devices(duration=10):
                 'decoder': decoder_name,
             }
 
+        # Live refresh when new devices appear
+        if is_new and len(devices) != last_count:
+            last_count = len(devices)
+            _print_table()
+
     try:
         scanner = BleakScanner(detection_callback=on_device)
         await scanner.start()
-        await asyncio.sleep(duration)
+
+        # Scan in rounds
+        keep_scanning = True
+        while keep_scanning:
+            _print_table()
+            print(f"\n{Style.DIM}Scanning ({round_duration}s round)...{Style.RESET_ALL}",
+                  end="", flush=True)
+
+            await asyncio.sleep(round_duration)
+            _print_table()
+
+            print(f"\n{Fore.YELLOW}Continue scanning? "
+                  f"[Enter]=5s more  [s]=select now  [q]=cancel{Style.RESET_ALL}",
+                  end=" ", flush=True)
+
+            # Non-blocking input
+            choice = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: input().strip().lower()
+            )
+            if choice == 's':
+                keep_scanning = False
+            elif choice == 'q':
+                await scanner.stop()
+                return {}
+            # Enter or anything else = scan another 5s round
+
         await scanner.stop()
     except Exception as e:
-        print(f"{Fore.RED}BLE scan failed: {e}{Style.RESET_ALL}")
+        print(f"\n{Fore.RED}BLE scan failed: {e}{Style.RESET_ALL}")
         print(f"{Style.DIM}Check that Bluetooth is enabled.{Style.RESET_ALL}")
         return {}
 
-    print(f"{Fore.GREEN}Found {len(devices)} device(s){Style.RESET_ALL}\n")
     return devices
 
 
 def display_discovered_devices(devices):
-    """Print discovered devices table. Returns sorted list for selection."""
+    """Print final discovered devices table. Returns sorted list for selection."""
     if not devices:
         print(f"{Fore.RED}No devices found. Make sure Bluetooth is enabled.{Style.RESET_ALL}")
         return []
 
+    configured_macs = set(monitored_sensors.keys())
+    tpms_count = sum(
+        1 for d in devices.values()
+        if d['decoder'] not in ("Unknown", "Generic")
+    )
+
+    print(f"\n{Fore.GREEN}{Style.BRIGHT}Scan complete: "
+          f"{len(devices)} devices, {tpms_count} TPMS{Style.RESET_ALL}\n")
+
     print(f"{Fore.CYAN}{Style.BRIGHT}"
-          f"{'#':<4} {'MAC Address':<20} {'Name':<20} {'RSSI':<6} {'Decoder':<15} {'TPMS?'}"
+          f"{'#':<4} {'MAC Address':<20} {'Name':<20} {'RSSI':<6} "
+          f"{'Decoder':<18} {'TPMS?'}"
           f"{Style.RESET_ALL}")
-    print("-" * 90)
+    print("-" * 95)
 
     devices_list = sorted(devices.items())
     for idx, (mac, info) in enumerate(devices_list, 1):
         is_tpms = info['decoder'] not in ("Unknown", "Generic")
         indicator = ""
-        if is_tpms:
+        if mac in configured_macs:
+            indicator = f"{Fore.BLUE}[configured]{Style.RESET_ALL}"
+        elif is_tpms:
             indicator = f"{Fore.GREEN}Yes ({info['decoder']}){Style.RESET_ALL}"
         elif info['decoder'] == "Generic":
             indicator = f"{Fore.YELLOW}? (Generic){Style.RESET_ALL}"
 
         color = Fore.GREEN if is_tpms else Fore.WHITE
         print(f"{color}{idx:<4} {mac:<20} {info['name'][:20]:<20} "
-              f"{info['rssi']:<6} {info['decoder']:<15} {indicator}{Style.RESET_ALL}")
+              f"{info['rssi']:<6} {info['decoder']:<18} {indicator}"
+              f"{Style.RESET_ALL}")
 
     return devices_list
 
@@ -262,13 +341,22 @@ def select_sensors(devices_list):
 
 # ── Monitoring ───────────────────────────────────────────────────────────
 
-def display_monitoring_ui():
-    """Render the live monitoring display."""
+def display_monitoring_ui(monitor_start=None):
+    """Render the live monitoring display with packet stats and history."""
     clear_screen()
     print_header("TPMS BLE Monitor - Live View")
 
+    now = time.time()
+    elapsed = int(now - monitor_start) if monitor_start else 0
+    elapsed_str = f"{elapsed // 60}m {elapsed % 60:02d}s" if elapsed >= 60 else f"{elapsed}s"
+
+    # Total packets across all sensors
+    total_pkts = sum(s['count'] for s in packet_stats.values())
+
     print(f"{Fore.CYAN}Sensors: {len(monitored_sensors)}    "
-          f"Time: {datetime.now().strftime('%H:%M:%S')}{Style.RESET_ALL}\n")
+          f"Time: {datetime.now().strftime('%H:%M:%S')}    "
+          f"Elapsed: {elapsed_str}    "
+          f"Total packets: {total_pkts}{Style.RESET_ALL}\n")
 
     if not sensor_data:
         print(f"{Fore.YELLOW}Waiting for sensor data...{Style.RESET_ALL}")
@@ -276,53 +364,190 @@ def display_monitoring_ui():
         print(f"\n{Style.DIM}Press Ctrl+C to stop{Style.RESET_ALL}")
         return
 
-    # Build header
-    cols = f"{'Sensor':<15} {'Decoder':<12} {'Pressure':<22} {'Temp':<8} {'Batt':<8} {'Status':<15}"
-    if SHOW_HEX_PACKETS:
-        cols += f" {'HEX':<16}"
-    cols += f" {'Age'}"
-
+    # ── Current readings table ──
+    cols = (f"{'Sensor':<15} {'Decoder':<14} {'Pressure':<22} "
+            f"{'Temp':<6} {'Batt':<7} {'Pkts':<6} {'Pkt/m':<7} {'Age'}")
     print(f"{Fore.CYAN}{Style.BRIGHT}{cols}{Style.RESET_ALL}")
-    print("-" * len(cols))
+    print("-" * 90)
 
     for mac, data in sensor_data.items():
         name = monitored_sensors.get(mac, {}).get('name', mac[-8:])
-        age = int(time.time() - data['timestamp'])
+        age = int(now - data['timestamp'])
         color = get_status_color(data['status'], data['battery'])
-        batt_color = Fore.RED if data['battery'] < 2.5 else Fore.GREEN
         decoder_color = Fore.YELLOW if data.get('decoder') == "Generic" else Fore.CYAN
 
-        pressure = f"{data['pressure_bar']:>4.2f} bar ({data['pressure_psi']:>4.1f} psi)"
-        status = format_status_flags(data['status'])
-        if data.get('warning'):
-            status += f" {Fore.RED}!{Style.RESET_ALL}"
+        pressure = f"{data['pressure_bar']:>5.2f} bar ({data['pressure_psi']:>5.1f} psi)"
+
+        # Battery display: use % for TPMS3, volts for others
+        batt_pct = data.get('battery_pct', 0)
+        if batt_pct > 0:
+            batt_color = Fore.RED if batt_pct < 20 else Fore.GREEN
+            batt_str = f"{batt_pct}%"
+        else:
+            batt_color = Fore.RED if data['battery'] < 2.5 else Fore.GREEN
+            batt_str = f"{data['battery']:.1f}V"
+
+        # Packet stats
+        stats = packet_stats.get(mac, {'count': 0, 'timestamps': []})
+        pkt_count = stats['count']
+        # Packets per minute (total session average)
+        if pkt_count >= 2 and elapsed > 0:
+            rate_str = f"{pkt_count / (elapsed / 60.0):.1f}"
+        elif pkt_count == 1:
+            rate_str = "<1"
+        else:
+            rate_str = "-"
 
         line = (f"{color}{name:<15} "
-                f"{decoder_color}{data.get('decoder', '?'):<12}{color} "
+                f"{decoder_color}{data.get('decoder', '?'):<14}{color} "
                 f"{pressure:<22} "
-                f"{data['temperature']:>4}C   "
-                f"{batt_color}{data['battery']:>4.1f}V{color}  "
-                f"{status:<15}")
-
-        if SHOW_HEX_PACKETS:
-            line += f" {Fore.YELLOW}{data['hex_data']:<16}{color}"
-
-        line += f" {Style.DIM}{age}s{Style.RESET_ALL}"
+                f"{data['temperature']:>3}C  "
+                f"{batt_color}{batt_str:<7}{color} "
+                f"{pkt_count:<6} "
+                f"{rate_str:<7} "
+                f"{Style.DIM}{age}s{Style.RESET_ALL}")
         print(line)
+
+    # ── Packet history ──
+    has_history = any(
+        len(packet_stats.get(mac, {}).get('history', [])) > 1
+        for mac in sensor_data
+    )
+    if has_history:
+        print(f"\n{Fore.CYAN}{Style.BRIGHT}Packet History "
+              f"{Style.DIM}(showing gaps to find sleep cycle){Style.RESET_ALL}")
+        print("-" * 105)
+        for mac, data in sensor_data.items():
+            name = monitored_sensors.get(mac, {}).get('name', mac[-8:])
+            history = packet_stats.get(mac, {}).get('history', [])
+            if len(history) <= 1:
+                continue
+
+            print(f"{Fore.CYAN}{name} ({len(history)} unique packets):{Style.RESET_ALL}")
+            for i, pkt in enumerate(history):
+                age_s = int(now - pkt['time'])
+                ts = datetime.fromtimestamp(pkt['time']).strftime('%H:%M:%S')
+                marker = " >>" if i == len(history) - 1 else "   "
+                color = Fore.GREEN if i == len(history) - 1 else Style.DIM
+
+                # Calculate gap from previous packet
+                gap_str = ""
+                if i > 0:
+                    gap = pkt['time'] - history[i - 1]['time']
+                    if gap >= 60:
+                        gap_str = f"{Fore.YELLOW}  +{int(gap)}s ({gap/60:.1f}m) SLEEP GAP{Style.RESET_ALL}"
+                    elif gap >= 10:
+                        gap_str = f"{Style.DIM}  +{int(gap)}s{Style.RESET_ALL}"
+
+                print(f"{color}{marker} {ts}  "
+                      f"{pkt['pressure_bar']:>5.2f} bar "
+                      f"({pkt['pressure_psi']:>5.1f} psi)  "
+                      f"{pkt['temperature']:>3}C  "
+                      f"{age_s:>5}s ago"
+                      f"{Style.RESET_ALL}{gap_str}")
+
+    if SHOW_HEX_PACKETS:
+        print(f"\n{Fore.CYAN}{Style.BRIGHT}Packet Breakdown{Style.RESET_ALL}")
+        print("-" * 90)
+        for mac, data in sensor_data.items():
+            name = monitored_sensors.get(mac, {}).get('name', mac[-8:])
+            hex_str = data['hex_data'].replace(' ', '')
+            raw = bytes.fromhex(hex_str)
+            decoder_name = data.get('decoder', '')
+
+            print(f"{Fore.CYAN}{name}  {Style.DIM}({decoder_name}){Style.RESET_ALL}")
+
+            if 'TPMS3' in decoder_name and len(raw) >= 16:
+                # TPMS3 16-byte annotated breakdown
+                mac_hex = hex_str[0:12]
+                press_hex = hex_str[12:20]
+                temp_hex = hex_str[20:24]
+                resv_hex = hex_str[24:28]
+                batt_hex = hex_str[28:30]
+                flag_hex = hex_str[30:32]
+
+                press_pa = raw[6] | (raw[7] << 8) | (raw[8] << 16) | (raw[9] << 24)
+                press_psi = press_pa * 0.000145038  # Gauge pressure (no atm subtraction)
+                temp_c = (raw[10] | (raw[11] << 8)) / 100.0
+                batt = raw[14]
+
+                # Spaced hex with byte separators
+                spaced = ' '.join(hex_str[i:i+2] for i in range(0, len(hex_str), 2))
+                print(f"  {Fore.YELLOW}{spaced}{Style.RESET_ALL}")
+                print(f"  {Fore.GREEN}"
+                      f"{'|--- MAC Address ---|':<25}"
+                      f"{'|-- Pressure --|':<19}"
+                      f"{'|Temp-|':<9}"
+                      f"{'|Rsv-|':<8}"
+                      f"{'Bat':<5}"
+                      f"{'Flg'}"
+                      f"{Style.RESET_ALL}")
+                print(f"  {Style.DIM}"
+                      f"  {mac_hex[:2]}:{mac_hex[2:4]}:{mac_hex[4:6]}:"
+                      f"{mac_hex[6:8]}:{mac_hex[8:10]}:{mac_hex[10:12]}"
+                      f"       {press_pa} Pa"
+                      f"      {temp_c:.1f}C"
+                      f"     ----"
+                      f"  {batt}%"
+                      f"   {raw[15]:02x}"
+                      f"{Style.RESET_ALL}")
+                print(f"  {Style.DIM}"
+                      f"  Bytes 0-5              "
+                      f"Bytes 6-9 (u32 LE)  "
+                      f"B10-11   "
+                      f"B12-13 "
+                      f" B14  "
+                      f"B15"
+                      f"{Style.RESET_ALL}")
+                print(f"  {Fore.WHITE}"
+                      f"  = {press_psi:+.1f} psi gauge  "
+                      f"({press_pa * 0.00001:.3f} bar)"
+                      f"{Style.RESET_ALL}")
+
+            elif 'BR' in decoder_name and len(raw) >= 7:
+                # BR 7-byte annotated breakdown
+                spaced = ' '.join(hex_str[i:i+2] for i in range(0, len(hex_str), 2))
+                print(f"  {Fore.YELLOW}{spaced}{Style.RESET_ALL}")
+                print(f"  {Fore.GREEN}"
+                      f"{'Sts':<5}{'Bat':<5}{'Tmp':<5}"
+                      f"{'|Press|':<9}{'|Chksum|'}"
+                      f"{Style.RESET_ALL}")
+                press_raw = (raw[3] << 8) | raw[4]
+                print(f"  {Style.DIM}"
+                      f"0x{raw[0]:02x} "
+                      f"{raw[1]/10:.1f}V "
+                      f"{raw[2]}C  "
+                      f"{press_raw/10:.1f} psi abs  "
+                      f"0x{raw[5]:02x}{raw[6]:02x}"
+                      f"{Style.RESET_ALL}")
+
+            else:
+                # Generic: just show spaced hex with byte indices
+                spaced = ' '.join(hex_str[i:i+2] for i in range(0, len(hex_str), 2))
+                indices = '  '.join(f'{i:<2}' for i in range(len(raw)))
+                print(f"  {Fore.YELLOW}{spaced}{Style.RESET_ALL}")
+                print(f"  {Style.DIM}{indices}{Style.RESET_ALL}")
 
     print(f"\n{Style.DIM}Press Ctrl+C to stop{Style.RESET_ALL}")
 
 
 async def monitor_sensors():
     """Live monitoring loop for selected sensors."""
-    global sensor_data
+    global sensor_data, packet_stats
 
     if not monitored_sensors:
         print(f"{Fore.RED}No sensors configured. Discover sensors first.{Style.RESET_ALL}")
         return
 
+    HISTORY_MAX = 50  # Number of recent packets to keep for sleep cycle analysis
+
     monitored_macs = set(monitored_sensors.keys())
-    last_update = {}  # MAC -> timestamp for deduplication
+    last_display = {}  # MAC -> timestamp for display dedup
+    monitor_start = time.time()
+
+    # Reset stats for this session
+    packet_stats = {mac: {'count': 0, 'timestamps': [], 'history': []}
+                    for mac in monitored_macs}
 
     def on_device(device: BLEDevice, adv: AdvertisementData):
         mac = normalize_mac(device.address)
@@ -331,19 +556,45 @@ async def monitor_sensors():
         if not adv.manufacturer_data:
             return
 
-        # Deduplicate rapid callbacks
         now = time.time()
-        if mac in last_update and (now - last_update[mac]) < DEDUP_INTERVAL:
+
+        # Deduplicate rapid BLE callbacks (bleak fires multiple times per broadcast)
+        if mac in last_display and (now - last_display[mac]) < DEDUP_INTERVAL:
             return
-        last_update[mac] = now
+        last_display[mac] = now
 
         for company_id, mfdata in adv.manufacturer_data.items():
             data = decode_sensor_data(
                 device.name or "", adv.service_uuids or [], mfdata
             )
-            if data:
-                sensor_data[mac] = data
-                display_monitoring_ui()
+            if not data:
+                continue
+
+            # Count meaningful (deduped) packets
+            stats = packet_stats.setdefault(
+                mac, {'count': 0, 'timestamps': [], 'history': []})
+            stats['count'] += 1
+            stats['timestamps'].append(now)
+            # Keep only last 60s of timestamps for rate calc
+            stats['timestamps'] = [
+                t for t in stats['timestamps'] if now - t <= 60
+            ]
+
+            # Add to history (only when data actually changed)
+            hex_data = data.get('hex_data', '')
+            if not stats['history'] or stats['history'][-1]['hex'] != hex_data:
+                stats['history'].append({
+                    'hex': hex_data,
+                    'pressure_psi': data['pressure_psi'],
+                    'pressure_bar': data['pressure_bar'],
+                    'temperature': data['temperature'],
+                    'time': now,
+                })
+                if len(stats['history']) > HISTORY_MAX:
+                    stats['history'] = stats['history'][-HISTORY_MAX:]
+
+            sensor_data[mac] = data
+            display_monitoring_ui(monitor_start)
 
     try:
         scanner = BleakScanner(detection_callback=on_device)
@@ -355,7 +606,7 @@ async def monitor_sensors():
     try:
         while True:
             await asyncio.sleep(5)
-            display_monitoring_ui()
+            display_monitoring_ui(monitor_start)
     except KeyboardInterrupt:
         pass
     finally:
@@ -390,9 +641,10 @@ async def main_menu():
         choice = input(f"\n{Fore.YELLOW}Select option: {Style.RESET_ALL}").strip().lower()
 
         if choice == '1':
-            devices = await discover_devices(duration=10)
-            devices_list = display_discovered_devices(devices)
-            select_sensors(devices_list)
+            devices = await discover_devices()
+            if devices:
+                devices_list = display_discovered_devices(devices)
+                select_sensors(devices_list)
             prompt()
 
         elif choice == '2':
