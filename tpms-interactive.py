@@ -95,6 +95,61 @@ def normalize_mac(mac: str) -> str:
     return mac.upper()
 
 
+def detect_phase(history, now):
+    """Detect sensor broadcast phase from packet history.
+
+    Returns (phase_name, expected_next_str) based on confirmed TPMS3 pattern:
+      Wake burst: ~4s intervals for ~36s after pressure change
+      Deep sleep: no broadcasts until next pressure change
+      On-tire: irregular wakes from thermal/mechanical pressure fluctuation
+    """
+    if not history:
+        return "No data", "waiting..."
+
+    last = history[-1]
+    age = now - last['time']
+    has_pressure = last['pressure_psi'] > 0.5
+
+    # Count recent burst packets (packets within last 60s that are ~4s apart)
+    burst_packets = []
+    for i in range(len(history) - 1, -1, -1):
+        if now - history[i]['time'] > 60:
+            break
+        burst_packets.append(history[i])
+
+    # Check if we're in a wake burst (3+ packets at ~4s intervals recently)
+    in_burst = False
+    if len(burst_packets) >= 3:
+        gaps = []
+        for i in range(len(burst_packets) - 1):
+            g = burst_packets[i]['time'] - burst_packets[i + 1]['time']
+            gaps.append(g)
+        avg_gap = sum(gaps) / len(gaps) if gaps else 0
+        if 2 <= avg_gap <= 8:
+            in_burst = True
+
+    # Currently in a wake burst
+    if in_burst and age < 10:
+        remaining = max(0, 36 - (now - burst_packets[-1]['time']))
+        return "Wake burst", f"~4s ({remaining:.0f}s left)"
+
+    # Burst just ended, entering sleep
+    if not in_burst and age < 60:
+        if has_pressure:
+            return "Entering sleep", "~4-7min (thermal)"
+        else:
+            return "Entering sleep", "needs pressure change"
+
+    # Been a while since last packet
+    if age >= 60:
+        if has_pressure:
+            return "On-tire sleep", "~4-7min (thermal)"
+        else:
+            return "Deep sleep", "needs pressure change"
+
+    return "Active", "~4s"
+
+
 # ── Config ───────────────────────────────────────────────────────────────
 
 def save_config():
@@ -359,8 +414,10 @@ def display_monitoring_ui(monitor_start=None):
           f"Total packets: {total_pkts}{Style.RESET_ALL}\n")
 
     if not sensor_data:
-        print(f"{Fore.YELLOW}Waiting for sensor data...{Style.RESET_ALL}")
-        print(f"{Style.DIM}(Make sure sensors are pressurized and nearby){Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Listening for BLE broadcasts...{Style.RESET_ALL}")
+        print(f"{Style.DIM}Sensor is likely in deep sleep. "
+              f"Next broadcast on pressure change.{Style.RESET_ALL}")
+        print(f"{Style.DIM}Tip: blow into sensor or warm tire by driving{Style.RESET_ALL}")
         print(f"\n{Style.DIM}Press Ctrl+C to stop{Style.RESET_ALL}")
         return
 
@@ -407,6 +464,25 @@ def display_monitoring_ui(monitor_start=None):
                 f"{rate_str:<7} "
                 f"{Style.DIM}{age}s{Style.RESET_ALL}")
         print(line)
+
+    # ── Phase / next packet prediction ──
+    print()
+    for mac, data in sensor_data.items():
+        name = monitored_sensors.get(mac, {}).get('name', mac[-8:])
+        history = packet_stats.get(mac, {}).get('history', [])
+        phase, next_pkt = detect_phase(history, now)
+
+        phase_colors = {
+            "Wake burst": Fore.GREEN,
+            "Entering sleep": Fore.YELLOW,
+            "On-tire sleep": Fore.CYAN,
+            "Deep sleep": Fore.RED,
+            "Active": Fore.GREEN,
+            "No data": Style.DIM,
+        }
+        pc = phase_colors.get(phase, Fore.WHITE)
+        print(f"  {name}: {pc}{phase}{Style.RESET_ALL}"
+              f"  {Style.DIM}Next packet: {next_pkt}{Style.RESET_ALL}")
 
     # ── Packet history ──
     has_history = any(

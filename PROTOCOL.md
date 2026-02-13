@@ -120,14 +120,13 @@ These sensors use aggressive power management to preserve the CR1632 battery. **
 |-------|-------------------|---------|
 | **Deep Sleep** | No broadcasts | Default state. Only pressure change can wake. |
 | **Wake Burst** | Every ~4 seconds for ~36 seconds | Pressure change triggers initial burst of ~10 packets |
-| **Timer Wake** | Brief (1-2 packets) ~1.7 min after burst | Internal timer fires once, then back to deep sleep |
 | **On-Tire (thermal)** | Every ~4-7 minutes (varies) | Thermal pressure fluctuations trigger interrupt |
 | **On-Tire (driving)** | More frequent (not yet measured) | Pressure changes from tire flex, braking, temperature |
 
 **Wake mechanism:**
 - **Pressure change** (the ONLY mechanism) - The MEMS pressure sensor generates a hardware interrupt when pressure crosses a threshold. This wakes the MCU from near-zero power deep sleep. Examples: inflating/deflating a tire, screwing sensor onto a pressurized valve, or blowing air directly into the sensor opening
 - **There is NO motion/rotation sensor** - Confirmed: spinning the sensor, rolling it, shaking it, spinning the tire with it attached - none of these wake it. This unit has no roll switch, gyroscope, or accelerometer.
-- **Internal timer** - Not a repeating wake mechanism. Fires once ~1.7 minutes after a wake burst, then stops.
+- **There is NO internal timer** - The sensor is purely event-driven. Earlier observation of a +102s wake after a burst was likely a minor pressure fluctuation, not a timer.
 
 **Confirmed sleep cycle (tested, sensor OFF tire with no pressure):**
 
@@ -135,9 +134,7 @@ These sensors use aggressive power management to preserve the CR1632 battery. **
 00:00  Pressure change detected (e.g., blowing into sensor)
 00:00  Wake burst begins - broadcasts every ~4 seconds
 00:36  Wake burst ends after ~10 packets (36 seconds)
-00:36  Sensor enters light sleep
-01:42  Timer wake - broadcasts 1-2 packets (+102 seconds / 1.7 minutes)
-01:46  Sensor enters deep sleep
+00:36  Sensor enters deep sleep
 09:00+ No further broadcasts - deep sleep is permanent until next pressure change
 ```
 
@@ -172,13 +169,12 @@ The sensor does NOT use a periodic timer when on a tire. Instead, **thermal pres
 
 **Deep sleep is truly off.** The sensor does not monitor, poll, or broadcast. The only active circuit is the MEMS pressure sensor's hardware interrupt, which draws near-zero current. This is how a CR1632 (~130 mAh) can last 1-2 years with no motion sensor to drain the battery.
 
-**With zero/no pressure:** The sensor goes to deep sleep after the single timer wake and does NOT continue periodic broadcasting. It will only wake again on the next pressure change. Confirmed - sensor monitored for 9+ minutes with no further broadcasts.
+**With zero/no pressure:** The sensor goes to deep sleep after the wake burst and does NOT broadcast again. It will only wake on the next pressure change. Confirmed - sensor monitored for 9+ minutes with no further broadcasts.
 
 **With sustained pressure (on a tire):** The sensor wakes whenever thermal or mechanical pressure fluctuations cross the interrupt threshold. There is no fixed broadcast interval - it is entirely event-driven.
 
 **Sleep triggers:**
-- No pressure change after the ~36 second wake burst
-- Escalating sleep: one timer wake at ~1.7 min, then permanent deep sleep
+- No pressure change after the ~36 second wake burst → immediate deep sleep
 - Sensors ship in "storage mode" (deep sleep) - first pressurization activates them
 
 **Tested observations:**
@@ -189,9 +185,9 @@ The sensor does NOT use a periodic timer when on a tire. Instead, **thermal pres
 - Blowing into the sensor opening: DOES wake it (confirmed, no adapter needed)
 - Slowly screwing onto valve stem (air flow = pressure change): DOES wake it
 - Wake burst: ~10 packets over ~36 seconds at ~4 second intervals
-- One timer wake ~1.7 minutes later (1-2 packets), then permanent deep sleep
+- After burst: immediate deep sleep (no timer wake confirmed)
 - On-tire idle in sun: wakes every ~4-7 minutes from thermal pressure changes
-- No motion/roll sensor present in this unit
+- No motion sensor, no timer - purely pressure-interrupt driven
 
 **For bench testing without a tire:**
 1. **Blow into the sensor** - confirmed: blowing air directly into the sensor opening with no adapter or valve reliably wakes it from deep sleep
